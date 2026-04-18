@@ -1,7 +1,7 @@
 """handlers/user.py — Public commands."""
 
 import logging
-from aiogram import Router, F
+from aiogram import Bot,Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatType
@@ -11,6 +11,12 @@ from utils.helpers import display_name, fmt_user, gender_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
+# Pool stored as module-level (set during startup)
+_pool = None
+
+
+def get_pool():
+    return _pool
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -200,56 +206,222 @@ async def cmd_settings(message: Message, pool, **_):
 async def cmd_language(message: Message, **_):
     await message.answer("🌐 Language switching coming soon. Your current language is detected automatically.")
 
+# from aiogram.enums import ChatType
+from datetime import datetime
+def build_profile_link(user):
+    if user.username:
+        return f"https://t.me/{user.username}"
+    return f"tg://user?id={user.id}"
 
-# ── /showmyid ─────────────────────────────────────────────────────────────────
+
+def format_display_name(user):
+    return " ".join(filter(None, [user.first_name, user.last_name])) \
+        or user.username or "Unknown"
+
 @router.message(Command("showmyid"))
-async def cmd_showmyid(message: Message, pool, **_):
+async def cmd_showmyid(message: Message):
+
+    pool = get_pool()
     user = message.from_user
+    chat = message.chat
+
+    # Save user
+    await db.upsert_telegram_user(pool, user)
     rec = await db.get_user_by_telegram_id(pool, user.id)
-    name = display_name(user)
-    username_line = f"@{user.username}" if user.username else "—"
 
+    name = format_display_name(user)
+    profile_link = build_profile_link(user)
+
+    if user.username:
+        username_line = f"@{user.username}"
+    else:
+        username_line = "No username"
+
+    # Optional fields
+    status = "🟢 Active"
+    joined = datetime.now().strftime("%Y-%m-%d")
+
+    # UI Message
     msg = (
-        f"╔══════════════════════════════╗\n"
-        f"║   🪪  <b>USER IDENTITY CARD</b>   ║\n"
-        f"╚══════════════════════════════╝\n\n"
-        f"👤 <b>Name:</b> {name}\n"
-        f"🔖 <b>Username:</b> {username_line}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🗄  <b>System USER_ID</b>\n    <code>{rec['ID']}</code>\n\n"
-        f"📱  <b>Telegram ID</b>\n    <code>{rec['TELEGRAM_USER_ID']}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔗  <b>How to use these IDs</b>\n\n"
-        f"<b>1️⃣ Link in app</b>\n"
-        f"    Profile → Connect Telegram → enter USER_ID: <code>{rec['ID']}</code>\n\n"
-        f"<b>2️⃣ API / message targeting</b>\n"
-        f"    Use Telegram ID: <code>{rec['TELEGRAM_USER_ID']}</code>\n\n"
-        f"<b>3️⃣ Migration / data import</b>\n"
-        f"    <code>user_id={rec['ID']}</code>\n"
-        f"    <code>telegram_id={rec['TELEGRAM_USER_ID']}</code>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <i>Tap any ID to copy. Keep these private.</i>"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📋 USER_ID: {rec['ID']}",
-                              callback_data=f"copy_uid_{rec['ID']}")],
-        [InlineKeyboardButton(text=f"📱 Telegram ID: {rec['TELEGRAM_USER_ID']}",
-                              callback_data=f"copy_tid_{rec['TELEGRAM_USER_ID']}")],
-    ])
-    await message.answer(msg, reply_markup=kb)
+        f"🪪 <b>User Profile</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-    if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        f"👤 <b>{name}</b>\n"
+        f"🔖 {username_line}\n"
+        f"🌐 <a href='{profile_link}'>Open Profile</a>\n\n"
+
+        f"📊 <b>Account Info</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🗄 <b>System ID</b>\n"
+        f"<code>{rec['ID']}</code>\n\n"
+
+        f"📱 <b>Telegram ID</b>\n"
+        f"<code>{rec['TELEGRAM_USER_ID']}</code>\n\n"
+
+        f"🟢 <b>Status:</b> {status}\n"
+        f"📅 <b>Joined:</b> {joined}\n\n"
+
+        f"⚙️ <b>Usage</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Link account using System ID\n"
+        f"• Send messages using Telegram ID\n"
+        f"• Use both for API / migration\n\n"
+
+        f"💡 <i>Use buttons below for quick actions</i>"
+    )
+
+    # Buttons
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="📋 System ID",
+                callback_data=f"copy_uid_{rec['ID']}"
+            ),
+            InlineKeyboardButton(
+                text="📱 Telegram ID",
+                callback_data=f"copy_tid_{rec['TELEGRAM_USER_ID']}"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🌐 Open Profile",
+                url=profile_link
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🔄 Refresh",
+                callback_data="refresh_profile"
+            )
+        ]
+    ])
+
+    # Try send profile photo
+    try:
+        photos = await message.bot.get_user_profile_photos(user.id, limit=1)
+
+        if photos.total_count > 0:
+            file_id = photos.photos[0][-1].file_id
+            await message.answer_photo(file_id, caption=msg, reply_markup=kb)
+        else:
+            await message.answer(msg, reply_markup=kb)
+
+    except Exception:
+        await message.answer(msg, reply_markup=kb)
+
+    # Private copy if in group
+    if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         try:
             await message.bot.send_message(
                 user.id,
-                f"🔒 <b>Private copy</b>\n\n"
-                f"USER_ID: <code>{rec['ID']}</code>\n"
-                f"Telegram ID: <code>{rec['TELEGRAM_USER_ID']}</code>"
+                f"🔒 <b>Your Private Info</b>\n\n"
+                f"🗄 System ID: <code>{rec['ID']}</code>\n"
+                f"📱 Telegram ID: <code>{rec['TELEGRAM_USER_ID']}</code>\n\n"
+                f"Keep this safe ✅"
             )
-        except Exception:
+        except:
             pass
+        
+# # ── /showmyid ─────────────────────────────────────────────────────────────────
+# @router.message(Command("showmyid"))
+# async def cmd_showmyid(message: Message, pool, **_):
+#     pool = get_pool()
+#     user = message.from_user
+#     chat = message.chat
+#         # Register / update in DB
+#     await db.upsert_telegram_user(pool, user)
+#     rec = await db.get_user_by_telegram_id(pool, user.id)
+#     name = display_name(user)
+#     username_line = f"@{user.username}" if user.username else "—"
+#     """
+#         https://t.me/username     → works if username exists
+#         tg://user?id=123456      → works always (deep link)
+#     """
+#     if username_line:
+#         username_line = f"@{user.username}"
+#         profile_link = f"https://t.me/{user.username}"
+#     else:
+#         username_line = "No username"
+#         profile_link = f"tg://user?id={user.id}"
+#     chat_type = chat.type  # private / group / supergroup / channel
+    
+#     msg = (
+#         f"╔══════════════════════════════╗\n"
+#         f"║   🪪  <b>USER IDENTITY CARD</b>   ║\n"
+#         f"╚══════════════════════════════╝\n\n"
+#         f"👤 <b>Name:</b> {name}\n"
+#         f"🔖 <b>Username:</b> {username_line}\n\n"
+#         f"👤 <b>Profile Link</b>"
+#         f"🌐 <a href='{profile_link}'>Open Profile</a>\n\n"
+#         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+#         f"🗄  <b>System USER_ID</b>\n    <code>{rec['ID']}</code>\n\n"
+#         f"📱  <b>Telegram ID</b>\n    <code>{rec['TELEGRAM_USER_ID']}</code>\n"
+#         f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+#         f"🔗  <b>How to use these IDs</b>\n\n"
+#         f"<b>1️⃣ Link in app</b>\n"
+#         f"    Profile → Connect Telegram → enter USER_ID: <code>{rec['ID']}</code>\n\n"
+#         f"<b>2️⃣ API / message targeting</b>\n"
+#         f"    Use Telegram ID: <code>{rec['TELEGRAM_USER_ID']}</code>\n\n"
+#         f"<b>3️⃣ Migration / data import</b>\n"
+#         f"    <code>user_id={rec['ID']}</code>\n"
+#         f"    <code>telegram_id={rec['TELEGRAM_USER_ID']}</code>\n\n"
+#         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+#         f"💡 <i>Tap any ID to copy. Keep these private.</i>"
+#     )
+#     kb = InlineKeyboardMarkup(inline_keyboard=[
+#         [InlineKeyboardButton(text=f"📋 USER_ID: {rec['ID']}",
+#                               callback_data=f"copy_uid_{rec['ID']}")],
+#         [InlineKeyboardButton(text=f"📱 Telegram ID: {rec['TELEGRAM_USER_ID']}",
+#                               callback_data=f"copy_tid_{rec['TELEGRAM_USER_ID']}")],
+#     ])
+#     await message.answer(msg, reply_markup=kb)
+
+#     if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+#         try:
+#             await message.bot.send_message(
+#                 user.id,
+#                 f"🔒 <b>Private copy</b>\n\n"
+#                 f"USER_ID: <code>{rec['ID']}</code>\n"
+#                 f"Telegram ID: <code>{rec['TELEGRAM_USER_ID']}</code>"
+#             )
+#         except Exception:
+#             pass
+
+#     # If used in a group, also send a short private DM reminder
+#     if chat_type in (ChatType.GROUP, ChatType.SUPERGROUP):
+#         try:
+#             bot: Bot = message.bot
+#             await bot.send_message(
+#                 chat_id=user.id,
+#                 text=(
+#                     f"🔒 <b>Private reminder</b>\n\n"
+#                     f"You just shared your IDs in <b>{chat.title or 'the group'}</b>.\n\n"
+#                     f"🗄 <b>USER_ID:</b> <code>{rec['USER_ID']}</code>\n"
+#                     f"📱 <b>Telegram ID:</b> <code>{rec['TELEGRAM_ID']}</code>\n\n"
+#                     f"Keep a copy here for reference. ✅"
+#                 )
+#             )
+#         except Exception:
+#             # User may not have started the bot in private — that's fine
+#             pass
 
 
+# @router.callback_query(F.data.startswith("copy_uid_"))
+# async def copy_uid(callback: CallbackQuery):
+#     await callback.answer("✅ System ID copied!", show_alert=False)
+
+
+# @router.callback_query(F.data.startswith("copy_tid_"))
+# async def copy_tid(callback: CallbackQuery):
+#     await callback.answer("✅ Telegram ID copied!", show_alert=False)
+
+
+@router.callback_query(F.data == "refresh_profile")
+async def refresh_profile(callback: CallbackQuery):
+    await callback.answer("🔄 Refreshing...")
+    await callback.message.delete()
+    
+    
 @router.callback_query(F.data.startswith("copy_uid_"))
 async def cb_copy_uid(call: CallbackQuery, **_):
     uid = call.data.split("copy_uid_")[1]
