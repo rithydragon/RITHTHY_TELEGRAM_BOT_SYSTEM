@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  telegram-bot:
+    build: .
+    container_name: agriculture_telegram_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
