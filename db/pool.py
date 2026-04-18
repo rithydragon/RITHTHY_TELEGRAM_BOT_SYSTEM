@@ -14,10 +14,6 @@ import ssl
 ssl_context = ssl.create_default_context(
     cafile="ca.pem"
 )
-print("SSL context ==========> ", ssl_context)
-print("HOST:", os.getenv("MYSQL_HOST"))
-print("PORT:", int(os.getenv("MYSQL_PORT", 3306)))
-print("PORT:", os.getenv("MYSQL_PORT"))
 # ── Pool factory ─────────────────────────────────────────────────────────────
 
 async def create_pool() -> aiomysql.Pool:
